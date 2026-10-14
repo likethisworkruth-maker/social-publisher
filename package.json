@@ -1,0 +1,34 @@
+{
+  "name": "social-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fail-closed Instagram and Threads publisher for GitHub Actions",
+  "engines": {
+    "node": ">=22.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --experimental-test-isolation=none tests/*.test.mjs",
+    "sample": "npm run build --silent && node dist/cli.js sample",
+    "demo": "npm run build --silent && node dist/cli.js demo",
+    "preview": "npm run build --silent && node dist/cli.js preview",
+    "validate": "npm run build --silent && node dist/cli.js validate",
+    "publish": "npm run build --silent && node dist/cli.js publish",
+    "reconcile": "npm run build --silent && node dist/cli.js reconcile",
+    "recover": "npm run build --silent && node dist/cli.js recover",
+    "retry-failed": "npm run build --silent && node dist/cli.js retry-failed",
+    "state:init": "npm run build --silent && node dist/cli.js state:init",
+    "assets:prepare": "npm run build --silent && node dist/runner.js prepare-assets",
+    "assets:save-manifests": "npm run build --silent && node dist/runner.js save-asset-manifests",
+    "assets:report": "npm run build --silent && node dist/runner.js report-assets"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "jpeg-js": "^0.4.4"
+  }
+}

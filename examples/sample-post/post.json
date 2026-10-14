@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "sample-post",
+  "enabled": false,
+  "publishAt": "2100-01-01T20:00:00+09:00",
+  "text": "ローカル確認用サンプルです。公開する前に本文・画像・日時を差し替えてください。",
+  "images": ["01.jpg"],
+  "platforms": ["instagram", "threads"],
+  "overrides": {}
+}

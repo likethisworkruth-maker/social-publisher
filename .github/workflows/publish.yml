@@ -1,0 +1,130 @@
+name: Publish and reconcile
+
+on:
+  schedule:
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to run. The default is read-only Dry Run."
+        type: choice
+        required: true
+        default: dry-run
+        options:
+          - dry-run
+          - publish
+          - reconcile
+          - recover
+          - retry-failed
+      source_commit:
+        description: "Immutable source commit selected by the dispatch client."
+        type: string
+        required: false
+      id:
+        description: "Optional post ID; required for now, reconcile, recover, or retry-failed."
+        type: string
+        required: false
+      publish_now:
+        description: "For one ID only, bypass publishAt and the lateness limit."
+        type: boolean
+        required: true
+        default: false
+      recovery_platform:
+        description: "SNS to recover after confirming it was not published."
+        type: choice
+        required: true
+        default: instagram
+        options:
+          - instagram
+          - threads
+      confirmed_not_published:
+        description: "Explicitly confirm a manual check found no published post."
+        type: boolean
+        required: true
+        default: false
+      recovery_evidence:
+        description: "Record the manual evidence for the recovery decision."
+        type: string
+        required: false
+
+concurrency:
+  group: social-publisher-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RUNNER_ACTION: ${{ github.event_name == 'schedule' && 'publish' || inputs.action }}
+      POST_ID: ${{ inputs.id }}
+      PUBLISH_NOW: ${{ inputs.publish_now }}
+      CONFIRMED_NOT_PUBLISHED: ${{ inputs.confirmed_not_published }}
+      RECOVERY_PLATFORM: ${{ inputs.recovery_platform }}
+      RECOVERY_EVIDENCE: ${{ inputs.recovery_evidence }}
+      SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
+      STATE_BRANCH: publisher-state
+      MAX_LATENESS_MINUTES: ${{ vars.MAX_LATENESS_MINUTES || '1440' }}
+      MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || '10' }}
+      ASSET_MODE: ${{ vars.ASSET_MODE || 'pages' }}
+      ASSET_BASE_URL: ${{ vars.ASSET_BASE_URL }}
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
+      INSTAGRAM_API_VERSION: ${{ vars.INSTAGRAM_API_VERSION }}
+      INSTAGRAM_TOKEN_EXPIRES_AT: ${{ vars.INSTAGRAM_TOKEN_EXPIRES_AT }}
+      THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+      THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+      THREADS_API_VERSION: ${{ vars.THREADS_API_VERSION }}
+      THREADS_TOKEN_EXPIRES_AT: ${{ vars.THREADS_TOKEN_EXPIRES_AT }}
+    steps:
+      - name: Require the default branch
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Run this workflow from the repository default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Refuse stale or mismatched source snapshots
+        run: |
+          checkout_sha="$(git rev-parse HEAD)"
+          if [ "$SOURCE_COMMIT" != "$checkout_sha" ]; then
+            echo "The selected source commit does not match the checked-out snapshot."
+            exit 1
+          fi
+          branch_encoded="$(jq -rn --arg branch "$DEFAULT_BRANCH" '$branch | @uri')"
+          latest_sha="$(curl --fail --silent --show-error --max-time 20 \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/branches/${branch_encoded}" | jq -r '.commit.sha // empty')"
+          if [ -z "$latest_sha" ] || [ "$checkout_sha" != "$latest_sha" ]; then
+            echo "The selected source snapshot is no longer the default branch tip; a newer run must handle publication."
+            exit 1
+          fi
+      - name: Validate and publish through the guarded runner
+        run: |
+          if [ "$RUNNER_ACTION" = "recover" ] || [ "$RUNNER_ACTION" = "retry-failed" ]; then
+            if [ "$CONFIRMED_NOT_PUBLISHED" != "true" ]; then
+              echo "This action requires confirmed_not_published=true."
+              exit 1
+            fi
+          fi
+          node dist/runner.js "$RUNNER_ACTION"

@@ -1,0 +1,140 @@
+name: Prepare public image assets
+
+on:
+  push:
+    branches-ignore:
+      - publisher-state
+    paths:
+      - "posts/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/prepare-assets.yml"
+
+concurrency:
+  group: social-publisher-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_COMMIT: ${{ github.sha }}
+
+jobs:
+  verify:
+    if: ${{ github.ref_name == github.event.repository.default_branch && vars.ASSET_MODE != 'fixed-url' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  build:
+    needs: verify
+    if: ${{ needs.verify.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      STATE_BRANCH: publisher-state
+      ASSET_OUTPUT_DIR: ${{ runner.temp }}/social-publisher-assets/site
+      PREPARED_ASSETS_FILE: ${{ runner.temp }}/social-publisher-assets/prepared-assets.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run assets:prepare
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/social-publisher-assets/site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: social-publisher-manifests
+          path: ${{ runner.temp }}/social-publisher-assets/prepared-assets.json
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: build
+    if: ${{ needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  save-manifests:
+    needs: deploy
+    if: ${{ needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      STATE_BRANCH: publisher-state
+      GITHUB_PAGES_URL: ${{ needs.deploy.outputs.page_url }}
+      ASSET_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      PREPARED_ASSETS_FILE: ${{ runner.temp }}/social-publisher-assets/prepared-assets.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: social-publisher-manifests
+          path: ${{ runner.temp }}/social-publisher-assets
+      - run: npm run assets:save-manifests
+
+  report-assets:
+    needs: [build, save-manifests]
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PREPARED_ASSETS_FILE: ${{ runner.temp }}/social-publisher-assets/prepared-assets.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: social-publisher-manifests
+          path: ${{ runner.temp }}/social-publisher-assets
+      - run: npm run assets:report
